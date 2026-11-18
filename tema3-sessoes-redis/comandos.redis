@@ -1,0 +1,71 @@
+# =========================================================
+# StreamLab · Tema 3 — Gestão de Sessões, Tokens e Cache
+# Banco chave-valor (Redis 7) — rode com: grep -v "^#" comandos.redis | redis-cli   (o redis-cli não aceita comentários)
+# Convenção de chaves:  tipo:identificador[:detalhe]
+# =========================================================
+FLUSHDB
+
+# ---------- 1. Sessão de login (HASH com expiração de 2 horas) ----------
+HSET sessao:tk_9f3a21 id_conta 1 id_perfil 1 dispositivo "Smart TV Sala" ip "189.40.12.7" criada_em "2026-11-18T20:01:00"
+EXPIRE sessao:tk_9f3a21 7200
+HGETALL sessao:tk_9f3a21
+TTL sessao:tk_9f3a21
+
+HSET sessao:tk_77b0c4 id_conta 1 id_perfil 2 dispositivo "Tablet" ip "189.40.12.7" criada_em "2026-11-18T20:15:00"
+EXPIRE sessao:tk_77b0c4 7200
+HSET sessao:tk_c51e88 id_conta 3 id_perfil 4 dispositivo "Celular" ip "177.21.8.90" criada_em "2026-11-18T20:20:00"
+EXPIRE sessao:tk_c51e88 7200
+
+# ---------- 2. Telas simultâneas: um SET por conta com os tokens ativos ----------
+SADD conta:1:sessoes tk_9f3a21 tk_77b0c4
+SADD conta:3:sessoes tk_c51e88
+SCARD conta:1:sessoes
+# O plano Básico permite 1 tela: se SCARD > limite, o app bloqueia o novo play
+SISMEMBER conta:1:sessoes tk_9f3a21
+
+# ---------- 3. Token de recuperação de senha (uso único, 15 minutos) ----------
+SET reset:juliana.prado@email.com "rp_4d81e0" EX 900 NX
+GET reset:juliana.prado@email.com
+# Tentar gerar outro antes de vencer não sobrescreve (NX)
+SET reset:juliana.prado@email.com "rp_outro" EX 900 NX
+# Ao usar, apaga
+GETDEL reset:juliana.prado@email.com
+
+# ---------- 4. Limite de tentativas de login (rate limit: 5 por minuto) ----------
+INCR tentativas:login:189.40.12.7
+EXPIRE tentativas:login:189.40.12.7 60 NX
+INCR tentativas:login:189.40.12.7
+GET tentativas:login:189.40.12.7
+
+# ---------- 5. Cache da tela inicial (JSON pronto, 5 minutos) ----------
+SET cache:home:perfil:1 "{\"linhas\":[{\"titulo\":\"Continue assistindo\",\"itens\":[\"t1\",\"t8\"]},{\"titulo\":\"Em alta\",\"itens\":[\"t10\",\"t4\",\"t7\"]}]}" EX 300
+GET cache:home:perfil:1
+TTL cache:home:perfil:1
+
+# ---------- 6. Continuar assistindo (ZSET: score = segundo onde parou) ----------
+ZADD continuar:perfil:1 1520 t1 845 t8 3610 t4
+ZRANGE continuar:perfil:1 0 -1 WITHSCORES
+ZSCORE continuar:perfil:1 t1
+
+# ---------- 7. Top 10 do dia (ZSET incrementado a cada play) ----------
+ZINCRBY top:2026-11-18 1 t1
+ZINCRBY top:2026-11-18 1 t1
+ZINCRBY top:2026-11-18 1 t10
+ZINCRBY top:2026-11-18 1 t7
+ZINCRBY top:2026-11-18 1 t1
+ZINCRBY top:2026-11-18 1 t10
+EXPIRE top:2026-11-18 172800
+ZREVRANGE top:2026-11-18 0 9 WITHSCORES
+
+# ---------- 8. Logout: apaga a sessão e tira do conjunto da conta ----------
+DEL sessao:tk_77b0c4
+SREM conta:1:sessoes tk_77b0c4
+SMEMBERS conta:1:sessoes
+
+# ---------- 9. Logout em todos os aparelhos ----------
+SMEMBERS conta:3:sessoes
+DEL sessao:tk_c51e88 conta:3:sessoes
+EXISTS sessao:tk_c51e88
+
+# ---------- 10. Listar chaves por padrão (SCAN, nunca KEYS em produção) ----------
+SCAN 0 MATCH sessao:* COUNT 100
